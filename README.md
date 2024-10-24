@@ -20,7 +20,7 @@ This respository provide a sample code to deploy a solution for collecting and c
 
 The key point here is we leverage CloudFormation stack set to deploy an IAM role into each service owner account. Then the Lambda function in the monitoring account will assume this role to get Amazon RDS recommendation in each service owner account.
 
-Step 1. Deploy a Lambda function in the monitoring account.
+Step 1. Deploy a Lambda function in **monitoring account**.
 
 ```bash
 aws cloudformation create-stack \
@@ -30,7 +30,7 @@ aws cloudformation create-stack \
  --capabilities CAPABILITY_NAMED_IAM
 ```
 
-Step 2. Create a CloudFormation stack-set in management account.
+Step 2. Create a CloudFormation stack-set in **management account**.
 
 ```bash
 aws cloudformation create-stack-set \
@@ -42,7 +42,7 @@ aws cloudformation create-stack-set \
  --capabilities CAPABILITY_NAMED_IAM
 ```
 
-Step 3. Create the stack set to target accounts within an organization unit.
+Step 3. Create stack instances targeting accounts within **an organization unit**.
 
 ```bash
 aws cloudformation create-stack-instances \
