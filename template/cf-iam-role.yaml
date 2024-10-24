@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "This CloudFormation template creates a role assumed by Lambda to describe RDS recommendations."
+Parameters:
+  RoleName:
+    Type: String
+    Description: Name of the IAM role
+    Default: "CentralizedRDSRecommendationsRole"
+  PolicyName:
+    Type: String
+    Description: Name of the IAM policy
+    Default: "CentralizedRDSRecommendationsPolicy"
+  ServiceRoleArn:
+    Type: String
+    Description: ARN of service role from monitoring account
+Resources:
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref RoleName
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref ServiceRoleArn
+            Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: !Ref PolicyName
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: 'arn:aws:logs:*:*:*'
+              - Effect: Allow
+                Action:
+                  - rds:DescribeDBRecommendations
+                Resource: '*'

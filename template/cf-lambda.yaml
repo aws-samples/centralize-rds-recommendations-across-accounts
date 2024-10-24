@@ -1,0 +1,193 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "This cloudformation create a Lambda function to get RDS recommendations"
+#----------------------------------------------------------
+# Parameters
+#----------------------------------------------------------
+Parameters:
+  LambdaFunctionName:
+    Type: String 
+    Default: "CentralizedRDSRecommendations"
+    Description: The name of the Lambda function
+  LambdaRoleName:
+    Type: String
+    Default: "LambdaGetRDSRecommendationsRole"
+    Description: The name of the Lambda IAM role
+  LambdaPolicyName:
+    Type: String
+    Default: "LambdaGetRDSRecommendationsPolicy"
+    Description: The name of the Lambda IAM policy
+  S3BucketName:
+    Type: String
+    Default: "centralized-rds-monitoring-demo"
+    Description: The name of the S3 bucket to store recommendations
+  AssumedRoleName:
+    Type: String 
+    Default: "CentralizedRDSRecommendationsRole"
+    Description: The name of the role for Lambda to assume
+  TargetAccountIds:
+    Type: CommaDelimitedList
+    Description: The list of account ids to share recommendations with
+Resources:
+#----------------------------------------------------------
+# Lambda execution role 
+#----------------------------------------------------------
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Ref LambdaRoleName 
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service: lambda.amazonaws.com
+          Action: sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: !Ref LambdaPolicyName
+        PolicyDocument: !Sub
+          - |
+            {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Action": [
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents"
+                  ],
+                  "Resource": "*",
+                  "Effect": "Allow"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "sts:AssumeRole"
+                  ],
+                  "Resource": "*"
+                },
+                {
+                  "Effect": "Allow",
+                  "Action": [
+                    "s3:PutObject"
+                  ],
+                  "Resource": "arn:${PARTITION}:s3:::${S3BucketName}/*"
+                }
+              ]
+            }
+          - S3BucketName: !Ref S3BucketName
+            PARTITION: !Ref AWS::Partition
+#----------------------------------------------------------
+# Lambda function
+#----------------------------------------------------------
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Ref LambdaFunctionName 
+      Handler: "index.handler"
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      Environment:
+        Variables:
+          S3_BUCKET_NAME: !Ref S3BucketName
+          REGION: !Ref AWS::Region
+          ASSUME_ROLE_NAME: !Ref AssumedRoleName
+          TARGET_ACCOUNT_IDS: !Join [",", !Ref TargetAccountIds]
+      Code:
+        ZipFile: |
+          import os
+          import boto3
+          import json
+          import uuid
+          from datetime import datetime
+          # Constants
+          S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "centralized-rds-monitoring-demo")
+          ASSUME_ROLE_NAME = os.getenv("ASSUME_ROLE_NAME", "CentralizedPerformanceInsightsRole")
+          REGION = os.getenv("REGION", "ap-southeast-1")
+          # Create sts client
+          sts_client = boto3.client("sts", region_name=REGION)
+          # Create s3 client
+          s3_client = boto3.client("s3", region_name=REGION)
+          # Get source accounts
+          def get_source_accounts():
+              """
+              Get source account ids
+              """
+              account_ids = os.getenv("TARGET_ACCOUNT_IDS").split(",")
+              return account_ids
+
+          # Get rds client per source account by assuming role
+          def get_rds_client(account_id, region, assume_role=ASSUME_ROLE_NAME):
+              """
+              Assume role and create a boto3 rds client
+              """
+              # Assume role
+              assumed_role_object = sts_client.assume_role(
+                  RoleArn=f"arn:aws:iam::{account_id}:role/{assume_role}",
+                  RoleSessionName=f"AssumeRoleSession{uuid.uuid4()}",
+              )
+              print(assumed_role_object)
+              credentials = assumed_role_object["Credentials"]
+              # Create rds client
+              rds_client = boto3.client(
+                  "rds",
+                  region_name=REGION,
+                  aws_access_key_id=credentials["AccessKeyId"],
+                  aws_secret_access_key=credentials["SecretAccessKey"],
+                  aws_session_token=credentials["SessionToken"],
+              )
+              # Return rds client
+              return rds_client
+
+          # Lambda handler
+          def handler(event, context):
+              """
+              Lambda function to describe RDS recommendations.
+              Args:
+                  event (dict): Lambda event data.
+                  context (object): Lambda context object.
+              Returns:
+                  dict: Response from RDS describeRecommendations API.
+              """
+              # Log file name
+              timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+              log_file_name = f"output_{timestamp}.json"
+              # Source accounts
+              source_accounts = get_source_accounts()
+              # Loop through source accounts
+              recommendations = []
+              for account_id in source_accounts:
+                  # Get RDS client
+                  rds_client = get_rds_client(account_id, REGION)
+                  # Call RDS describeRecommendations API
+                  recommendation = rds_client.describe_db_recommendations()
+                  # Append
+                  recommendations.append(recommendation)
+              # Upload to S3
+              s3_client.put_object(
+                  Body=json.dumps(recommendations, default=str, indent=4),
+                  Bucket=S3_BUCKET_NAME,
+                  Key=log_file_name,
+              )
+              # Return all recommendations
+              return 1
+      Runtime: "python3.10"
+      Timeout: 300
+      MemorySize: 512
+      Tags:
+        - Key: "Name"
+          Value: !Ref LambdaFunctionName
+#----------------------------------------------------------
+# Outputs
+#----------------------------------------------------------
+Outputs:
+  LambdaFunctionArn:
+    Value: !GetAtt LambdaFunction.Arn
+    Export:
+      Name: LambdaFunctionArn
+  LambdaExecutionRoleArn:
+    Value: !GetAtt LambdaExecutionRole.Arn
+    Export:
+      Name: LambdaExecutionRoleArn
